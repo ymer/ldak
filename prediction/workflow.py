@@ -5,7 +5,7 @@ studypth = "../../sumstats/"
 julia = "~/miniforge3/envs/julia/bin/julia"
 d = "files"
 process_sumstats = "../../process_sumstats/ProcessSumstats.jl"
-
+nthreads = 8
 
 ### CODE
 from os import makedirs
@@ -42,114 +42,102 @@ gwf.target(
 
 d_highld = newdir(f'{d}/highld')
 highld = f'{d_highld}/highld.txt'
-gwf.target(
-    f'get_high_ld_regions',
-    inputs = [], 
-    outputs = [highld]
-    ) << f"""
-        wget -O {highld} http://dougspeed.com/wp-content/uploads/highld.txt
-    """
-
 genes_predictors = f'{d_highld}/genes.predictors.used'
 gwf.target(
-    f'process_high_ld_regions',
-    memory = '64g',
-    inputs = [highld] + pl(s_ref),
+    f'get_high_ld_regions',
+    inputs = pl(s_ref), 
     outputs = [genes_predictors]
     ) << f"""
+        wget -O {highld} http://dougspeed.com/wp-content/uploads/highld.txt
         {ldak} --cut-genes {d_highld} --bfile {s_ref} --genefile {highld} 
     """
 
-d_sumstats = f'{d}/sumstats'
-makedirs(d_sumstats, exist_ok = True)
+d_sumstats = newdir(f'{d}/sumstats')
 sumstats = f'{d_sumstats}/{studyname}'
-snplist = f'{d_sumstats}/{studyname}.snplist'
+snplist = f'{sumstats}.snplist'
 gwf.target(
     f'process_sumstats',
     memory = '64g',
     inputs = pl(s_ref),
-    outputs = [snplist, sumstats],
-    cores = 8
+    outputs = [snplist, sumstats]
     ) << f"""
         {julia} {process_sumstats} --in {studypth}/{studyname} --outdir {d_sumstats} --write-snplist --filter-reference {s_ref}.bim
     """
 
-d_sections = f'{d}/sections'
-weights_chr = []
-makedirs(d_sections, exist_ok=True)
+d_sections = newdir(f'{d}/sections')
+weights_ch = []
 for ch in range(21, 23):
-    section = f'{d_sections}/s{ch}'
-    weights_short = f'{section}/weights.short'
-    weights_chr.append(weights_short)
-    makedirs(section, exist_ok=True)
+    d_section = newdir(f'{d_sections}/s{ch}')
+    weights_short = f'{d_section}/weights.short'
+    weights_ch.append(weights_short)
     gwf.target(
         f'compute_weightings_{ch}',
         inputs = pl(s_ref) + [snplist],
         outputs = [weights_short],
         memory = '64g'
     ) << f"""
-        {ldak} --cut-weights {section} --bfile {s_ref} --extract {snplist} --chr {ch}
-        {ldak} --calc-weights-all {section} --bfile {s_ref} --extract {snplist} --chr {ch}
+        {ldak} --cut-weights {d_section} --bfile {s_ref} --extract {snplist} --chr {ch}
+        {ldak} --calc-weights-all {d_section} --bfile {s_ref} --extract {snplist} --chr {ch}
         """
 
+
+
 weights = f'{d}/weights'
+cat_command = 'cat ' + ' '.join(weights_ch) + f' > {weights}'
 gwf.target(
     f'join_weights',
     memory = '64g',
-    inputs = weights_chr,
+    inputs = weights_ch,
     outputs = [weights],
     ) << f"""
-        cat {d_sections}/s{{21..22}}/weights.short > {weights}
+    cat {' '.join(weights_ch)} > {weights}
     """
 
 
-d_bldldak = f'{d}/bld.ldak/'
-makedirs(d_bldldak, exist_ok = True)
-stub_bldldak = f'{d_bldldak}/bld.ldak'
-matrix = f'{stub_bldldak}.matrix'
-tagging = f'{stub_bldldak}.tagging'
-
+d_bldldak = newdir(f'{d}/bld.ldak/')
+s_bldldak = f'{d_bldldak}/bld.ldak'
+matrix = f'{s_bldldak}.matrix'
+tagging = f'{s_bldldak}.tagging'
 gwf.target(
     f'calc_tagging',
-    memory = '64g', cores = 8, walltime = '24:00:00',
+    memory = '64g', cores = nthreads, walltime = '24:00:00',
     inputs = pl(s_ref) + [snplist],
     outputs = [matrix, tagging]
     ) << f"""
-        {ldak} --calc-tagging {stub_bldldak} --bfile {s_ref} --extract {snplist} --ignore-weights YES --power -.25 --annotation-number 64 --annotation-prefix {s_bld} --window-cm 1 --save-matrix YES
+        {ldak} --calc-tagging {s_bldldak} --bfile {s_ref} --extract {snplist} --ignore-weights YES --power -.25 --annotation-number 64 --annotation-prefix {s_bld} --window-cm 1 --save-matrix YES --max-threads {nthreads}
     """
 
-ind_hers = f'{stub_bldldak}.ind.hers'
+ind_hers = f'{s_bldldak}.ind.hers'
 gwf.target(
     f'estimate_heritability',
     memory = '64g',
     inputs = [matrix, tagging],
     outputs = [ind_hers]
     ) << f"""
-        {ldak} --sum-hers {stub_bldldak} --tagfile {tagging} --summary {sumstats} --matrix {matrix}
+        {ldak} --sum-hers {s_bldldak} --tagfile {tagging} --summary {sumstats} --matrix {matrix} --check-sums NO
     """
 
 
-d_cors = f'{d}/cors/'
-makedirs(d_cors, exist_ok=True)
-stub_cors = f'{d_cors}/cors'
-cors_bim = f'{stub_cors}.cors.bim'
+d_cors = newdir(f'{d}/cors/')
+s_cors = f'{d_cors}/cors'
+cors_files = [f'{s_cors}.cors.{ext}' for ext in ['bim', 'bin', 'noise', 'root']]
 gwf.target(
     f'calc_cors',
-    memory = '64g',
+    memory = '64g', cores = nthreads,
     inputs = pl(s_ref) + [snplist],
-    outputs = [cors_bim]
+    outputs = cors_files
     ) << f"""
-        {ldak} --calc-cors {stub_cors} --bfile {s_ref} --window-cm 3 --extract {snplist}
+        {ldak} --calc-cors {s_cors} --bfile {s_ref} --window-cm 3 --extract {snplist} --max-threads {nthreads}
     """
 
 
 gwf.target(
     f'mega_prs',
-    memory = '64g',
-    inputs = [snplist, ind_hers, sumstats],
+    memory = '64g', cores = 1,
+    inputs = [snplist, ind_hers, sumstats] + cors_files,
     outputs = []
     ) << f"""
-        {ldak} --mega-prs bayesr --model bayesr --ind-hers {ind_hers} --summary {sumstats} --cors cors --cv-proportion .1 --pseudos height --high-LD {highld} --window-cm 1 --extract {snplist}
+        {ldak} --mega-prs bayesr --model bayesr --ind-hers {ind_hers} --summary {sumstats} --cors {s_cors} --cv-proportion .1 --high-LD {highld} --window-cm 1 --extract {snplist} --max-threads {nthreads}
     """
 
 
