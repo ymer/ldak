@@ -22,9 +22,9 @@ git clone https://github.com/ymer/process_sumstats
 - Install julia packages.
 Go to the process_sumstats directory, and
 
-´´´
+```
 julia julia_install.jl
-´´´
+```
 
 - Make the ldak file executable.
 Or download the newest version from [dougspeed.com](http://dougspeed.com/)
