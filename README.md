@@ -4,7 +4,7 @@ Uses [gwf](https://gwf.app/)
 
 How to use:
 - Install conda requirements
-´´´
+```
 conda create --name plink
 conda activate plink
 conda install -c bioconda plink
@@ -12,12 +12,12 @@ conda create --name ldak
 conda activate ldak
 conda install gwf
 conda install -c conda-forge julia
-´´´
+```
 
 - Get ProcessSumstats from [https://github.com/ymer/process_sumstats](github.com/ymer/process_sumstats)
-´´´
+```
 git clone https://github.com/ymer/process_sumstats
-´´´
+```
 
 - Install julia packages.
 Go to the process_sumstats directory, and
