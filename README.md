@@ -36,3 +36,4 @@ The paths for Julia and plink can be found with the conda command `which`
 - Run the pipeline with `gwf run`
 
 
+For great justice.
