@@ -21,6 +21,7 @@ git clone https://github.com/ymer/process_sumstats
 
 - Install julia packages.
 Go to the process_sumstats directory, and
+
 ´´´
 julia julia_install.jl
 ´´´
