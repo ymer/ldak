@@ -1,9 +1,10 @@
 ### SETTINGS ###
 
 # input files
-studypth = ""
-studies = ["study1", "study2"]
-individuals = ""
+studies_csv = "studies.csv"
+individuals = "../../study_genome/genome2_nodupes"
+ref_rsid = "../../reference/magma/g1000_eur"
+ref_snp = "../../reference/ldak/ref"
 
 # program paths
 ldak = ".././ldak5.2.linux"
@@ -46,57 +47,40 @@ gwf.target(
     """
 
 
-# Download and extract a non-Finnish European reference panel constructed from 1000 Genomes Project data.
-
-d_ref = newdir(f'{d}/ref'); 
-s_ref_orig = f'{d_ref}/ref'
-gwf.target(
-    f'download_reference_{d}',
-    inputs = [],
-    outputs = pl(s_ref_orig)
-    ) << f"""
-        wget -O {s_ref_orig}.tgz https://genetics.ghpc.au.dk/doug/ref.tgz
-        tar -xzvf {s_ref_orig}.tgz -C {d_ref}
-    """
-
-
-
 ### Pipeline for each individual sumstat file
 
-def workflows(studyname, d):
+def workflows(d, sumstat_input, extra_arguments):
 
-    # redefine folders for individual sumstats
-    d_ref = newdir(f'{d}/ref') 
-
-# Format and clean the summary statistics. (Using [ProcessSumstats](https://github.com/ymer/process_sumstats))
+    # Format and clean the summary statistics. (Using ProcessSumstats)
 
     d_sumstats = newdir(f'{d}/sumstats')
-    sumstats = f'{d_sumstats}/{studyname}'
-    snplist = f'{sumstats}.snplist'
+    out_stub = f'{d_sumstats}/{d}'
+    sumstats = f'{out_stub}.sumstats'
+    snplist = f'{out_stub}.snpid'
     gwf.target(
         f'process_sumstats_{d}',
         memory = '64g',
-        inputs = pl(s_ref_orig),
+        inputs = pl(ref_rsid) + pl(ref_snp),
         outputs = [snplist, sumstats]
         ) << f"""
-            {julia} {process_sumstats} --in {studypth}/{studyname} --outdir {d_sumstats} --write-snplist --filter-reference {s_ref_orig}.bim
+            {julia} {process_sumstats} --in {sumstat_input} --out {out_stub} --write-snpid --filter {ref_snp}.bim --ref {ref_rsid}.bim --pos-from-ref {extra_arguments}
         """
 
+    # Filter the reference genome to only include the SNPs remaining after the above sumstats cleaning.
 
-# Filter the reference genome to only include the SNPs remaining after the above sumstats cleaning.
-
-    s_ref = f'{d_ref}/ref_filter'
+    ref = newdir(f'{d}/ref') 
+    snps_filter = f'{ref}/snps'
     gwf.target(
-        f'filter_ref_{d}',
+        f'snps_filter_{d}',
         memory = '64g',
-        inputs = pl(s_ref_orig) + [snplist],
-        outputs = pl(s_ref)
+        inputs = pl(ref_snp) + [snplist],
+        outputs = pl(snps_filter)
         ) << f"""
-            {plink} --bfile {s_ref_orig} --extract {snplist} --make-bed --out {s_ref}
+            {plink} --bfile {ref_snp} --extract {snplist} --make-bed --out {snps_filter}
         """
 
 
-# Download details of long-range linkage disquilibrium regions and identify which reference panel SNPs they contain.(See [High-LD Regions](http://dougspeed.com/high-ld-regions/)).
+    # Download details of long-range linkage disquilibrium regions and identify which reference panel SNPs they contain.(See [High-LD Regions](http://dougspeed.com/high-ld-regions/)).
 
     d_highld = newdir(f'{d}/highld')
     highld = f'{d_highld}/highld.txt'
@@ -104,30 +88,30 @@ def workflows(studyname, d):
     gwf.target(
         f'get_high_ld_regions_{d}',
         memory = '64g',
-        inputs = pl(s_ref), 
+        inputs = pl(snps_filter), 
         outputs = [highld_predictors]
         ) << f"""
             wget -O {highld} http://dougspeed.com/wp-content/uploads/highld.txt
-            {ldak} --cut-genes {d_highld} --bfile {s_ref} --genefile {highld} 
+            {ldak} --cut-genes {d_highld} --bfile {snps_filter} --genefile {highld} 
         """
 
 
-# Compute LDAK weightings. (See [LDAK Weightings](http://dougspeed.com/calculate-weightings/))
+    # Compute LDAK weightings. (See [LDAK Weightings](http://dougspeed.com/calculate-weightings/))
 
     d_sections = newdir(f'{d}/sections')
     weights_ch = []
-    for ch in range(21, 23):
+    for ch in range(1, 23):
         d_section = newdir(f'{d_sections}/s{ch}')
         weights_short = f'{d_section}/weights.short'
         weights_ch.append(weights_short)
         gwf.target(
             f'compute_weightings_{ch}_{d}',
-            inputs = pl(s_ref) + [snplist],
+            inputs = pl(snps_filter),
             outputs = [weights_short],
             memory = '64g'
         ) << f"""
-            {ldak} --cut-weights {d_section} --bfile {s_ref} --extract {snplist} --chr {ch}
-            {ldak} --calc-weights-all {d_section} --bfile {s_ref} --extract {snplist} --chr {ch}
+            {ldak} --cut-weights {d_section} --bfile {snps_filter} --chr {ch}
+            {ldak} --calc-weights-all {d_section} --bfile {snps_filter} --chr {ch}
             """
 
     weights = f'{d}/weights'
@@ -142,7 +126,7 @@ def workflows(studyname, d):
         """
 
 
-# Calculate the tagging file and heritability matrix assuming the BLD-LDAK Model. (See [Calculate Taggings](http://dougspeed.com/calculate-taggings/)).
+    # Calculate the tagging file and heritability matrix assuming the BLD-LDAK Model. (See [Calculate Taggings](http://dougspeed.com/calculate-taggings/)).
 
     d_bldldak = newdir(f'{d}/bld.ldak/')
     s_bldldak = f'{d_bldldak}/bld.ldak'
@@ -151,14 +135,14 @@ def workflows(studyname, d):
     gwf.target(
         f'calc_tagging_{d}',
         memory = '64g', cores = nthreads, walltime = '24:00:00',
-        inputs = pl(s_ref) + [snplist],
+        inputs = pl(snps_filter),
         outputs = [matrix, tagging]
         ) << f"""
-            {ldak} --calc-tagging {s_bldldak} --bfile {s_ref} --extract {snplist} --ignore-weights YES --power -.25 --annotation-number 64 --annotation-prefix {s_bld} --window-cm 1 --save-matrix YES --max-threads {nthreads}
+            {ldak} --calc-tagging {s_bldldak} --bfile {snps_filter} --ignore-weights YES --power -.25 --annotation-number 64 --annotation-prefix {s_bld} --window-cm 1 --save-matrix YES --max-threads {nthreads}
         """
 
 
-# Estimate the heritability contributed by each SNP. (See [SNP Heritability](http://dougspeed.com/snp-heritability/)).
+    # Estimate the heritability contributed by each SNP. (See [SNP Heritability](http://dougspeed.com/snp-heritability/)).
 
     ind_hers = f'{s_bldldak}.ind.hers'
     gwf.target(
@@ -171,7 +155,7 @@ def workflows(studyname, d):
         """
 
 
-# Calculate predictor-predictor correlations. (See [MegaPRS](http://dougspeed.com/megaprs/))
+    # Calculate predictor-predictor correlations. (See [MegaPRS](http://dougspeed.com/megaprs/))
 
     d_cors = newdir(f'{d}/cors/')
     s_cors = f'{d_cors}/cors'
@@ -179,14 +163,14 @@ def workflows(studyname, d):
     gwf.target(
         f'calc_cors_{d}',
         memory = '64g', cores = nthreads,
-        inputs = pl(s_ref) + [snplist],
+        inputs = pl(snps_filter),
         outputs = cors_files
         ) << f"""
-            {ldak} --calc-cors {s_cors} --bfile {s_ref} --window-cm 3 --extract {snplist} --max-threads {nthreads}
+            {ldak} --calc-cors {s_cors} --bfile {snps_filter} --window-cm 3 --max-threads {nthreads}
         """
 
 
-# Construct the prediction model (see [MegaPRS](http://dougspeed.com/megaprs/)).
+    # Construct the prediction model (see [MegaPRS](http://dougspeed.com/megaprs/)).
 
     d_bayesr = newdir(f'{d}/bayesr')
     s_bayesr = f'{d_bayesr}/bayesr'
@@ -194,19 +178,19 @@ def workflows(studyname, d):
     gwf.target(
         f'mega_prs_{d}',
         memory = '64g', cores = nthreads,
-        inputs = [snplist, ind_hers, sumstats, highld_predictors] + cors_files,
+        inputs = [ind_hers, sumstats, highld_predictors] + cors_files,
         outputs = [effects]
         ) << f"""
-            {ldak} --mega-prs {s_bayesr} --model bayesr --ind-hers {ind_hers} --summary {sumstats} --cors {s_cors} --cv-proportion .1 --high-LD {highld_predictors} --window-cm 1 --extract {snplist} --max-threads {nthreads}
+            {ldak} --mega-prs {s_bayesr} --model bayesr --ind-hers {ind_hers} --summary {sumstats} --cors {s_cors} --cv-proportion .1 --high-LD {highld_predictors} --window-cm 1 --max-threads {nthreads}
         """
 
 
-# Calculate scores
+    # Calculate scores
 
     s_scores = f'{d}/scores'
     scores = f'{s_scores}.profile'
     gwf.target(
-        f'calc_prs_{d}',
+        f'OOOO_calc_prs_{d}_OOOO',
         memory = '64g', cores = nthreads,
         inputs = [effects],
         outputs = [scores]
@@ -214,7 +198,21 @@ def workflows(studyname, d):
             {ldak} --calc-scores {s_scores} --scorefile {effects} --bfile {individuals} --power 0    
     """
 
-for studyname in studies:
-    studyname = newdir(studyname)
-    workflows(studyname, studyname)
+import csv
+
+studies = []
+
+with open("studies.csv", 'r') as file:
+    reader = csv.DictReader(file, delimiter=';')
+    
+    for row in reader:
+        studies.append(row)
+
+for study in studies:
+    studyname = study['studyname']
+    sumstat_path = study['sumstat_path']
+    extra_arguments = study['process_sumstats_arguments']
+
+    newdir(studyname)
+    workflows(studyname, sumstat_path, extra_arguments)
 
